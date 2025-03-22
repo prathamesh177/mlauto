@@ -6,12 +6,83 @@ import re
 import toml
 import importlib.util
 
-# Configuration
-BENCH_PATH = "/home/prathamesh/todo-bench"
-SITE_NAME = "site1.local"
-ADMIN_PASSWORD = "admin"
-HOST = "localhost"
-PORT = "8002"
+def install_system_dependencies():
+    """Install required system dependencies"""
+    try:
+        print("Installing system dependencies...")
+        # Update package list and install required packages
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+        subprocess.run([
+            "sudo", "apt-get", "install", "-y",
+            "pkg-config", "libmysqlclient-dev", "python3-dev",
+            "build-essential", "mariadb-client", "mariadb-server"
+        ], check=True)
+        print("System dependencies installed successfully")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to install system dependencies: {e}")
+        raise
+
+def create_bench(bench_name, bench_path):
+    """Create a new Frappe bench if it doesn't exist"""
+    try:
+        if not os.path.exists(bench_path):
+            print(f"Creating new bench '{bench_name}' at {bench_path}...")
+            # Install system dependencies first
+            install_system_dependencies()
+            
+            subprocess.run(["bench", "init", bench_name], cwd=os.path.dirname(bench_path), check=True)
+            print(f"Bench '{bench_name}' created successfully")
+            
+            os.chdir(bench_path)
+            # Install frappe
+            subprocess.run(["bench", "get-app", "frappe"], check=True)
+            print("Installed frappe in the new bench")
+        else:
+            print(f"Bench already exists at {bench_path}")
+            os.chdir(bench_path)
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to create bench: {e}")
+        raise
+    except Exception as e:
+        print(f"Unexpected error during bench creation: {e}")
+        raise
+
+def create_site(bench_path, site_name, admin_password):
+    """Create a new site in the bench"""
+    try:
+        os.chdir(bench_path)
+        if not os.path.exists(f"{bench_path}/sites/{site_name}"):
+            print(f"Creating site '{site_name}'...")
+            subprocess.run([
+                "bench", "new-site", site_name,
+                "--admin-password", admin_password,
+                "--no-mariadb-socket"
+            ], check=True)
+            print(f"Site '{site_name}' created successfully")
+            
+            # Enable developer mode
+            subprocess.run([
+                "bench", "set-config", "--site", site_name,
+                "developer_mode", "1"
+            ], check=True)
+            print(f"Developer mode enabled for site: {site_name}")
+        else:
+            print(f"Site '{site_name}' already exists")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to create site: {e}")
+        raise
+
+def install_erpnext(bench_path, site_name):
+    """Install ERPNext in the bench and site"""
+    try:
+        os.chdir(bench_path)
+        print("Installing ERPNext...")
+        subprocess.run(["bench", "get-app", "erpnext"], check=True)
+        subprocess.run(["bench", "install-app", "erpnext", "--site", site_name], check=True)
+        print("ERPNext installed successfully")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to install ERPNext: {e}")
+        raise
 
 # Step 1: Parse the user prompt
 def parse_prompt(prompt):
@@ -62,25 +133,20 @@ def parse_prompt(prompt):
         raise
 
 # Step 2: Create a new Frappe app manually
-def create_frappe_app(app_name):
+def create_frappe_app(app_name, bench_path):
     try:
-        os.chdir(BENCH_PATH)
+        os.chdir(bench_path)
         
-        # Define a unique module name based on app_name
         module_name = f"{app_name}_module"
-
-        # Create app directory structure
-        app_path = f"{BENCH_PATH}/apps/{app_name}"
+        app_path = f"{bench_path}/apps/{app_name}"
         app_module_path = f"{app_path}/{app_name}"
         os.makedirs(app_module_path, exist_ok=True)
 
-        # Create basic files
         with open(f"{app_path}/__init__.py", "w") as f:
             f.write("")
         with open(f"{app_module_path}/__init__.py", "w") as f:
             f.write("__version__ = '0.0.1'\n")
 
-        # Create pyproject.toml
         pyproject_content = {
             "project": {
                 "name": app_name,
@@ -98,11 +164,9 @@ def create_frappe_app(app_name):
             toml.dump(pyproject_content, f)
         print(f"Created pyproject.toml for {app_name}")
 
-        # Create modules.txt with unique module name
         with open(f"{app_module_path}/modules.txt", "w") as f:
             f.write(module_name)
 
-        # Create hooks.py with all required hooks
         hooks_content = f"""from . import __version__ as version
 
 app_name = "{app_name}"
@@ -118,9 +182,8 @@ app_license = "MIT"
 
         print(f"Created app structure: {app_name}")
 
-        # Install app dependencies
         subprocess.run(
-            [f"{BENCH_PATH}/env/bin/python", "-m", "pip", "install", "-e", app_path],
+            [f"{bench_path}/env/bin/python", "-m", "pip", "install", "-e", app_path],
             check=True
         )
         print(f"Installed app dependencies for {app_name}")
@@ -131,9 +194,9 @@ app_license = "MIT"
         raise
 
 # Step 3: Create DocType files
-def create_doctype(app_name, doctype_name, module_name, fields):
+def create_doctype(app_name, doctype_name, module_name, fields, bench_path):
     try:
-        app_path = f"{BENCH_PATH}/apps/{app_name}/{app_name}"
+        app_path = f"{bench_path}/apps/{app_name}/{app_name}"
         module_path = f"{app_path}/{module_name}"
         doctype_dir = f"{app_path}/doctype/{doctype_name.lower()}"
 
@@ -174,145 +237,32 @@ class {doctype_name}(Document):
         raise
 
 # Step 4: Ensure site exists, install the app, and start the server
-def ensure_site_and_install_app(app_name):
+def ensure_site_and_install_app(app_name, bench_path, site_name, admin_password, host, port):
     try:
-        os.chdir(BENCH_PATH)
-        sites_dir = f"{BENCH_PATH}/sites"
-        site_path = f"{sites_dir}/{SITE_NAME}"
+        os.chdir(bench_path)
+        subprocess.run(["bench", "install-app", app_name, "--site", site_name], check=True)
+        print(f"Installed app: {app_name} into site: {site_name}")
 
-        # Step 1: Update apps.txt with new app first
-        apps_txt_path = f"{BENCH_PATH}/sites/apps.txt"
-        if os.path.exists(apps_txt_path):
-            with open(apps_txt_path, "r") as f:
-                apps = [app.strip() for app in f.read().splitlines() if app.strip()]
-        else:
-            apps = ["frappe"]
-        if app_name not in apps:
-            apps.append(app_name)
-        with open(apps_txt_path, "w") as f:
-            f.write("\n".join(apps) + "\n")
-        print(f"Initial apps list: {apps}")
-
-        # Step 2: Install the new app into the site first
-        if os.path.exists(site_path):
-            print(f"Site {SITE_NAME} exists. Installing new app '{app_name}'...")
-            try:
-                subprocess.run(["bench", "install-app", app_name, "--site", SITE_NAME], check=True)
-                print(f"Installed app: {app_name} into site: {SITE_NAME}")
-            except subprocess.CalledProcessError as e:
-                print(f"Warning: Failed to install '{app_name}' (possibly already installed): {e}")
-        else:
-            print(f"Site {SITE_NAME} does not exist. Creating it now...")
-            subprocess.run(
-                ["bench", "new-site", SITE_NAME, "--admin-password", ADMIN_PASSWORD, "--no-mariadb-socket"],
-                check=True
-            )
-            print(f"Created site: {SITE_NAME}")
-            subprocess.run(
-                ["bench", "set-config", "--site", SITE_NAME, "developer_mode", "1"],
-                check=True
-            )
-            print(f"Enabled developer mode for site: {SITE_NAME}")
-            subprocess.run(["bench", "install-app", app_name, "--site", SITE_NAME], check=True)
-            print(f"Installed app: {app_name} into site: {SITE_NAME}")
-
-        # Step 3: Validate apps and fix hooks, skipping invalid ones
-        required_hooks = ["app_title", "app_description", "app_publisher", "app_email", "app_license"]
-        valid_apps = ["frappe"]  # Start with frappe
-        for app in apps:
-            if not app or app == "frappe":
-                continue
-            app_dir = f"{BENCH_PATH}/apps/{app}"
-            app_path = f"{app_dir}/{app}/hooks.py"
-            
-            if not os.path.exists(app_dir):
-                print(f"Warning: App directory '{app_dir}' does not exist. Skipping '{app}'.")
-                continue
-
-            if os.path.exists(app_path):
-                with open(app_path, "r") as f:
-                    hooks_content = f.read()
-                missing_hooks = [hook for hook in required_hooks if hook not in hooks_content]
-                if missing_hooks:
-                    print(f"Fixing hooks.py for app '{app}' (missing: {missing_hooks})...")
-                    hooks_content += "\n" + "\n".join([
-                        f'app_title = "{app.capitalize()}"' if "app_title" in missing_hooks else "",
-                        f'app_description = "A custom Frappe app"' if "app_description" in missing_hooks else "",
-                        'app_publisher = "Prathamesh"' if "app_publisher" in missing_hooks else "",
-                        'app_email = "prathamesh@example.com"' if "app_email" in missing_hooks else "",
-                        'app_license = "MIT"' if "app_license" in missing_hooks else ""
-                    ]).strip() + "\n"
-                    with open(app_path, "w") as f:
-                        f.write(hooks_content.strip())
-            
-            try:
-                if importlib.util.find_spec(app):
-                    valid_apps.append(app)
-                else:
-                    print(f"Warning: App '{app}' not importable. Skipping '{app}'.")
-            except ModuleNotFoundError:
-                print(f"Warning: Module '{app}' not found. Skipping '{app}'.")
-
-        # Step 4: Sync site’s installed apps with valid_apps
-        print(f"Syncing installed apps for site {SITE_NAME}...")
-        result = subprocess.run(
-            ["bench", "list-apps", "--site", SITE_NAME],
-            capture_output=True, text=True, check=True
-        )
-        installed_apps = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        print(f"Currently installed apps in site: {installed_apps}")
-
-        for app in installed_apps:
-            if app not in valid_apps and app != "frappe":
-                try:
-                    print(f"Removing app '{app}' from site {SITE_NAME}...")
-                    subprocess.run(["bench", "remove-app", app, "--site", SITE_NAME], check=True)
-                except subprocess.CalledProcessError as e:
-                    print(f"Warning: Failed to remove '{app}' with bench: {e}. Attempting manual cleanup...")
-                    # Fallback: Manual database cleanup
-                    try:
-                        subprocess.run(["bench", "--site", SITE_NAME, "console"], input=f"""
-import frappe
-frappe.db.delete("Installed Application", {{"name": "{app}"}})
-frappe.db.commit()
-""", text=True, shell=True, check=True)
-                        print(f"Manually removed '{app}' from site database.")
-                    except subprocess.CalledProcessError as e:
-                        print(f"Error: Failed to manually remove '{app}': {e}")
-
-        # Step 5: Rewrite apps.txt with valid apps
-        with open(apps_txt_path, "w") as f:
-            f.write("\n".join(valid_apps) + "\n")
-        print(f"Updated apps.txt with valid apps: {valid_apps}")
-
-        # Step 6: Clear caches
-        subprocess.run(["bench", "clear-cache"], check=True)
-        subprocess.run(["bench", "clear-cache", "--site", SITE_NAME], check=True)
-        subprocess.run(["bench", "clear-website-cache", "--site", SITE_NAME], check=True)
-
-        # Step 7: Start the server
+        # Start the server
         print("Starting Frappe server...")
-        subprocess.Popen(["bench", "start"], cwd=BENCH_PATH)
-        live_link = f"http://{HOST}:{PORT}"
-        print(f"Server started. Access your app at: {live_link} (login with admin/{ADMIN_PASSWORD})")
+        subprocess.Popen(["bench", "start"], cwd=bench_path)
+        live_link = f"http://{host}:{port}"
+        print(f"Server started. Access your app at: {live_link} (login with admin/{admin_password})")
     except subprocess.CalledProcessError as e:
-        print(f"Failed during site setup or server start: {e}")
-        raise
-    except Exception as e:
-        print(f"Unexpected error: {e}")
+        print(f"Failed during app installation or server start: {e}")
         raise
 
 # Step 5: Create a zip file of the app
-def create_zip(app_name):
+def create_zip(app_name, bench_path):
     try:
-        app_path = f"{BENCH_PATH}/apps/{app_name}"
-        zip_path = f"{BENCH_PATH}/{app_name}.zip"
+        app_path = f"{bench_path}/apps/{app_name}"
+        zip_path = f"{bench_path}/{app_name}.zip"
         if os.path.exists(app_path):
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
                 for root, _, files in os.walk(app_path):
                     for file in files:
                         file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, f"{BENCH_PATH}/apps")
+                        arcname = os.path.relpath(file_path, f"{bench_path}/apps")
                         zipf.write(file_path, arcname)
             print(f"Created zip file: {zip_path}")
             return zip_path
@@ -324,14 +274,21 @@ def create_zip(app_name):
         return None
 
 # Main function
-def generate_frappe_app(prompt):
+def generate_frappe_app(prompt, bench_name, bench_path, site_name, admin_password, host, port):
     try:
+        # Create bench, site, and install ERPNext
+        create_bench(bench_name, bench_path)
+        create_site(bench_path, site_name, admin_password)
+        install_erpnext(bench_path, site_name)
+        
+        # Create and install custom app
         app_name, doctypes = parse_prompt(prompt)
-        module_name = create_frappe_app(app_name)
+        module_name = create_frappe_app(app_name, bench_path)
         for doctype_name, fields in doctypes.items():
-            create_doctype(app_name, doctype_name, module_name, fields)
-        ensure_site_and_install_app(app_name)
-        zip_path = create_zip(app_name)
+            create_doctype(app_name, doctype_name, module_name, fields, bench_path)
+        ensure_site_and_install_app(app_name, bench_path, site_name, admin_password, host, port)
+        zip_path = create_zip(app_name, bench_path)
+        
         if zip_path:
             print(f"App generation successful! Download your app at: {zip_path}")
         else:
@@ -340,11 +297,12 @@ def generate_frappe_app(prompt):
         print(f"Failed to generate or install app: {e}")
 
 if __name__ == "__main__":
-    BENCH_PATH = "/home/prathamesh/todo-bench"
-    SITE_NAME = "site2.local"
-    ADMIN_PASSWORD = "admin"
-    HOST = "localhost"
-    PORT = "8002"
+    bench_name = input("Enter the name of the bench (e.g., test-bench): ").strip()
+    bench_path = f"/home/prathamesh/{bench_name}"
+    site_name = "site2.local"
+    admin_password = "admin"
+    host = "localhost"
+    port = "8002"
 
     app_name = input("Enter the name of the app (e.g., library_management): ").strip()
     prompt = (
@@ -354,5 +312,4 @@ if __name__ == "__main__":
     )
     
     print(f"Generated prompt: {prompt}")
-    
-    generate_frappe_app(prompt)
+    generate_frappe_app(prompt, bench_name, bench_path, site_name, admin_password, host, port)
